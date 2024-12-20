@@ -1,0 +1,122 @@
+name: CodeSage AI Review
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            git diff --name-only origin/${{ github.base_ref }} HEAD > changed_files.txt
+          else
+            git diff --name-only ${{ github.event.before }} ${{ github.event.after }} > changed_files.txt
+          fi
+
+      - name: Run CodeSage Analysis
+        id: codesage
+        run: |
+          python3 <<EOF
+          import boto3
+          import json
+          
+          # Initialize SageMaker runtime client
+          runtime = boto3.client('sagemaker-runtime')
+
+          # Read changed files
+          with open('changed_files.txt', 'r') as f:
+              files = f.read().splitlines()
+
+          results = {
+              'optimization': [],
+              'security': [],
+              'review': []
+          }
+
+          for file in files:
+              if file.endswith(('.py', '.js', '.java', '.cpp', '.cs')):  # Add more extensions as needed
+                  with open(file, 'r') as f:
+                      code = f.read()
+                  
+                  # Call optimization endpoint
+                  response = runtime.invoke_endpoint(
+                      EndpointName='${{ secrets.OPTIMIZATION_ENDPOINT }}',
+                      ContentType='application/json',
+                      Body=json.dumps({'code': code, 'file': file})
+                  )
+                  results['optimization'].append(json.loads(response['Body'].read()))
+
+                  # Call security endpoint
+                  response = runtime.invoke_endpoint(
+                      EndpointName='${{ secrets.SECURITY_ENDPOINT }}',
+                      ContentType='application/json',
+                      Body=json.dumps({'code': code, 'file': file})
+                  )
+                  results['security'].append(json.loads(response['Body'].read()))
+
+                  # Call code review endpoint
+                  response = runtime.invoke_endpoint(
+                      EndpointName='${{ secrets.REVIEW_ENDPOINT }}',
+                      ContentType='application/json',
+                      Body=json.dumps({'code': code, 'file': file})
+                  )
+                  results['review'].append(json.loads(response['Body'].read()))
+
+          # Create comment body
+          comment = "## CodeSage AI Review\n\n"
+          
+          if results['optimization']:
+              comment += "### 🚀 Optimization Suggestions\n"
+              for result in results['optimization']:
+                  comment += f"- {result['suggestion']}\n"
+          
+          if results['security']:
+              comment += "\n### 🔒 Security Analysis\n"
+              for result in results['security']:
+                  comment += f"- {result['finding']}\n"
+          
+          if results['review']:
+              comment += "\n### 📝 Code Review\n"
+              for result in results['review']:
+                  comment += f"- {result['feedback']}\n"
+
+          with open('comment.txt', 'w') as f:
+              f.write(comment)
+          EOF
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const comment = fs.readFileSync('comment.txt', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
+  </rewritten_file> 
